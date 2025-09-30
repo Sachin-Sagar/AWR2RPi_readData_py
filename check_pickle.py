@@ -1,51 +1,68 @@
 import pickle
+import json
+import numpy as np
 
-# --- IMPORTANT ---
-# Replace 'your_file_name.pkl' with the actual path to your .pkl file.
-file_path = 'fHist_20231027_103000.pkl' # Example filename
+# Step 1: Define the FrameData class so Python knows what it's loading.
+# This should match the class from 'read_and_parse_frame.py'.
+class FrameData:
+    """A class to hold the parsed data for a single frame."""
+    def __init__(self):
+        self.header = {}
+        self.point_cloud = np.array([])
+        self.num_points = 0
+        self.target_list = {}
+        self.num_targets = 0
+        self.stats_info = {}
 
-# --- Security Warning ---
-# Only unpickle data from sources you trust. Loading a malicious pickle
-# file can execute arbitrary code on your machine.
+# Step 2: Create a custom JSON encoder to handle special data types.
+class CustomEncoder(json.JSONEncoder):
+    """
+    A custom JSON encoder that can handle:
+    - NumPy ndarray objects (converts them to nested lists)
+    - FrameData objects (converts them to dictionaries)
+    """
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            # Convert NumPy arrays to Python lists
+            return obj.tolist()
+        if isinstance(obj, FrameData):
+            # Convert our custom FrameData object to a dictionary
+            return {
+                "header": obj.header,
+                "num_points": obj.num_points,
+                "num_targets": obj.num_targets,
+                "stats_info": obj.stats_info,
+                "point_cloud": obj.point_cloud.tolist(), # Also convert internal numpy array
+                "target_list": obj.target_list,
+            }
+        # Let the base class default method raise the TypeError for other types
+        return json.JSONEncoder.default(self, obj)
 
+# --- Configuration ---
+# Set the input .pkl file and the desired output .json file
+pickle_file_path = 'your_fHist_file.pkl' # <-- CHANGE THIS
+json_file_path = 'output_data.json'      # <-- CHANGE THIS (optional)
+
+# --- Main Conversion Logic ---
 try:
-    # Open the file in binary read mode ('rb')
-    with open(file_path, 'rb') as f:
-        # Load the data from the file
-        data = pickle.load(f)
-
-    # --- Now you can inspect the loaded data ---
+    print(f"Loading data from '{pickle_file_path}'...")
+    # Open the pickle file in binary read mode
+    with open(pickle_file_path, 'rb') as pkl_file:
+        # Load the entire list of FrameData objects
+        fHist_data = pickle.load(pkl_file)
     
-    print(f"Successfully loaded data from: {file_path}\n")
-
-    # 1. Check the type of the loaded object
-    print(f"The data is of type: {type(data)}\n")
-
-    # 2. If it's a list or dictionary, check its length
-    if isinstance(data, (list, dict)):
-        print(f"Number of items in the data: {len(data)}\n")
-
-        # 3. Print the first item to see its structure
-        if len(data) > 0:
-            # For a list, this gets the first element.
-            # For a dict, you might want to iterate through keys instead.
-            first_item = data[0] if isinstance(data, list) else next(iter(data.items()))
-            
-            print("--- Inspecting the first item ---")
-            print(f"Type of the first item: {type(first_item)}")
-            
-            # If the item is an object, you can inspect its attributes
-            if hasattr(first_item, '__dict__'):
-                 print("Attributes of the first item:")
-                 # Pretty-print the object's dictionary
-                 import pprint
-                 pprint.pprint(vars(first_item))
-            else:
-                print(f"First item's content: {first_item}")
-            print("---------------------------------")
-
+    print("Data loaded successfully.")
+    print(f"Converting and writing data to '{json_file_path}'...")
+    
+    # Open the JSON file in write mode
+    with open(json_file_path, 'w') as json_file:
+        # Use json.dump() with our custom encoder and add indentation for readability
+        json.dump(fHist_data, json_file, cls=CustomEncoder, indent=4)
+        
+    print("\nConversion complete! ✨")
+    print(f"You can now view your data in the file: {json_file_path}")
 
 except FileNotFoundError:
-    print(f"ERROR: The file '{file_path}' was not found.")
+    print(f"ERROR: The file '{pickle_file_path}' was not found. Please check the filename.")
 except Exception as e:
-    print(f"An error occurred while reading the file: {e}")
+    print(f"An unexpected error occurred: {e}")
