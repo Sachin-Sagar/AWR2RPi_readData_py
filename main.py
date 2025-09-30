@@ -4,6 +4,8 @@ import serial
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel, QGridLayout
 from PyQt5.QtCore import QThread, pyqtSignal, QObject
 import pyqtgraph as pg
+import pickle  # Added for data logging
+from datetime import datetime  # Added for timestamped filenames
 
 # Local imports
 import hw_comms_utils
@@ -58,6 +60,10 @@ class BSDVisualizer(QMainWindow):
         self.h_data_port = h_data_port
         self.params = params
         self.frame_num = 0
+        
+        # --- DATA LOGGING: Initialize fHist buffer and create filename ---
+        self.fHist = []
+        self.log_filename = f"fHist_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl"
         
         self.setWindowTitle(f"AWRL1432 BSD Visualizer")
         self.setGeometry(100, 100, 1600, 900)
@@ -188,10 +194,24 @@ class BSDVisualizer(QMainWindow):
         else:
             self.pc_plot_item.clear()
             self.rd_plot_item.clear()
+            
+        # --- DATA LOGGING: Append the current frame to the buffer ---
+        self.fHist.append(frame_data)
 
     def closeEvent(self, event):
         """Handles the window closing event to clean up resources."""
         print("--- Closing application ---")
+        
+        # --- DATA LOGGING: Save the fHist buffer to a file ---
+        if self.fHist:
+            print(f"--- Saving data to {self.log_filename} ---")
+            try:
+                with open(self.log_filename, 'wb') as f:
+                    pickle.dump(self.fHist, f)
+                print("--- Save complete ---")
+            except Exception as e:
+                print(f"ERROR: Failed to save data log: {e}")
+
         self.worker.stop()
         self.thread.quit()
         self.thread.wait()
