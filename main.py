@@ -14,7 +14,7 @@ import read_and_parse_frame
 
 # --- Configuration ---
 # TODO: Replace these hardcoded values with a file dialog for user selection.
-CLI_COMPORT_NUM = '/dev/ttyACM1'  # The Application/User UART port number
+CLI_COMPORT_NUM = '/dev/ttyACM0'  # The Application/User UART port number
 CHIRP_CONFIG_FILE = 'profile_80m_40mpsec_bsdevm_16tracks_dyClutter.cfg'
 INITIAL_BAUD_RATE = 115200
 
