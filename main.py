@@ -16,7 +16,7 @@ import read_and_parse_frame
 from read_and_parse_frame import FrameData
 
 # --- Configuration ---
-CLI_COMPORT_NUM = '/dev/ttyACM1'
+CLI_COMPORT_NUM = '/dev/ttyACM0'
 CHIRP_CONFIG_FILE = 'profile_80m_40mpsec_bsdevm_16tracks_dyClutter.cfg'
 INITIAL_BAUD_RATE = 115200
 
