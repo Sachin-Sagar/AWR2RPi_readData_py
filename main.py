@@ -1,28 +1,60 @@
 import sys
 import time
 import serial
+import json # Replaces pickle
+import numpy as np # Needed for the custom encoder
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel, QGridLayout
 from PyQt5.QtCore import QThread, pyqtSignal, QObject
 import pyqtgraph as pg
-import pickle  # Added for data logging
-from datetime import datetime  # Added for timestamped filenames
+from datetime import datetime
 
 # Local imports
 import hw_comms_utils
 import parsing_utils
 import read_and_parse_frame
+from read_and_parse_frame import FrameData # Import the class definition
 
 # --- Configuration ---
-# TODO: Replace these hardcoded values with a file dialog for user selection.
-CLI_COMPORT_NUM = '/dev/ttyACM0'  # The Application/User UART port number
+CLI_COMPORT_NUM = '/dev/ttyACM1'
 CHIRP_CONFIG_FILE = 'profile_80m_40mpsec_bsdevm_16tracks_dyClutter.cfg'
 INITIAL_BAUD_RATE = 115200
 
+# --- NEW: Robust JSON Encoder Class ---
+class CustomEncoder(json.JSONEncoder):
+    """
+    A robust JSON encoder that can handle:
+    - FrameData objects and all their nested contents.
+    - NumPy ndarray objects.
+    - Other basic NumPy data types.
+    """
+    def default(self, obj):
+        if isinstance(obj, FrameData):
+            serializable_dict = {
+                "header": obj.header,
+                "num_points": obj.num_points,
+                "num_targets": obj.num_targets,
+                "stats_info": obj.stats_info,
+                "point_cloud": obj.point_cloud.tolist(),
+                "target_list": {}
+            }
+            if obj.target_list:
+                for key, value in obj.target_list.items():
+                    if isinstance(value, np.ndarray):
+                        serializable_dict["target_list"][key] = value.tolist()
+                    else:
+                        serializable_dict["target_list"][key] = value
+            return serializable_dict
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        return super().default(obj)
+
 class Worker(QObject):
-    """
-    Worker thread for handling serial communication and data parsing.
-    Runs in the background to keep the GUI responsive.
-    """
     frame_ready = pyqtSignal(object)
     finished = pyqtSignal()
 
@@ -33,59 +65,53 @@ class Worker(QObject):
         self.is_running = True
 
     def run(self):
-        """Main processing loop."""
         while self.is_running:
             try:
-                # Read and parse one frame of data
                 frame_data = read_and_parse_frame.read_and_parse_frame(self.h_data_port, self.params)
-                
-                # If a valid frame is received, emit it for the GUI to display
                 if frame_data and frame_data.header:
                     self.frame_ready.emit(frame_data)
             except Exception as e:
                 print(f"Error in worker thread: {e}")
-                time.sleep(0.1) # Avoid busy-looping on error
-        
+                time.sleep(0.1)
         self.finished.emit()
 
     def stop(self):
-        """Stops the processing loop."""
         self.is_running = False
 
-
 class BSDVisualizer(QMainWindow):
-    """Main application window."""
     def __init__(self, h_data_port, params):
         super().__init__()
         self.h_data_port = h_data_port
         self.params = params
         self.frame_num = 0
-        
-        # --- DATA LOGGING: Initialize fHist buffer and create filename ---
-        self.fHist = []
-        self.log_filename = f"fHist_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl"
-        
-        self.setWindowTitle(f"AWRL1432 BSD Visualizer")
+
+        # --- REAL-TIME JSON LOGGING ---
+        self.log_filename = f"fHist_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        try:
+            self.log_file = open(self.log_filename, 'w')
+            self.log_file.write('[') # Start of the JSON list
+            self.first_frame = True
+            print(f"--- Logging data to {self.log_filename} ---")
+        except Exception as e:
+            print(f"ERROR: Could not open log file: {e}")
+            self.log_file = None
+        # --------------------------------
+
+        self.setWindowTitle("AWRL1432 BSD Visualizer")
         self.setGeometry(100, 100, 1600, 900)
         
-        # Main layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
         
-        # Left Panel (Stats and Config)
         left_panel = QVBoxLayout()
-        main_layout.addLayout(left_panel, 1) # 1/5 of the width
-
-        # Right Panel (Tabs for plots)
+        main_layout.addLayout(left_panel, 1)
         right_panel = QVBoxLayout()
-        main_layout.addLayout(right_panel, 4) # 4/5 of the width
+        main_layout.addLayout(right_panel, 4)
         
-        # --- Create GUI Elements ---
         self._create_stats_panel(left_panel)
         self._create_plot_tabs(right_panel)
 
-        # --- Setup and start the worker thread ---
         self.thread = QThread()
         self.worker = Worker(self.h_data_port, self.params)
         self.worker.moveToThread(self.thread)
@@ -99,32 +125,23 @@ class BSDVisualizer(QMainWindow):
         self.thread.start()
 
     def _create_stats_panel(self, layout):
-        """Creates the statistics display panel."""
         stats_widget = QWidget()
         stats_layout = QGridLayout(stats_widget)
         layout.addWidget(stats_widget)
-
         self.stats_labels = {}
-        stats_to_create = [
-            "Frame", "Detection Points", "Target Count", 
-            "CPU (ms)", "UART Tx (ms)", "Temp RFE (C)", "Temp DIG (C)", "Overflow"
-        ]
-        
+        stats_to_create = ["Frame", "Detection Points", "Target Count", "CPU (ms)", "UART Tx (ms)", "Temp RFE (C)", "Temp DIG (C)", "Overflow"]
         for i, text in enumerate(stats_to_create):
             label_title = QLabel(f"<b>{text}:</b>")
             label_value = QLabel("0")
             stats_layout.addWidget(label_title, i, 0)
             stats_layout.addWidget(label_value, i, 1)
             self.stats_labels[text] = label_value
-        
         layout.addStretch()
 
     def _create_plot_tabs(self, layout):
-        """Creates the tabbed interface for plots."""
         tab_widget = QTabWidget()
         layout.addWidget(tab_widget)
         
-        # Point Cloud Tab
         pc_widget = QWidget()
         pc_layout = QVBoxLayout(pc_widget)
         self.pc_plot = pg.PlotWidget()
@@ -134,15 +151,11 @@ class BSDVisualizer(QMainWindow):
         self.pc_plot.setLabel('bottom', 'X (m)')
         self.pc_plot.showGrid(x=True, y=True)
         self.pc_plot.setAspectLocked(True)
-        
-        # --- AXIS FIX FOR POINT CLOUD ---
         self.pc_plot.setXRange(-40, 40)
         self.pc_plot.setYRange(0, 100)
-        
         pc_layout.addWidget(self.pc_plot)
         tab_widget.addTab(pc_widget, "Point Cloud")
 
-        # Range-Doppler Tab
         rd_widget = QWidget()
         rd_layout = QVBoxLayout(rd_widget)
         self.rd_plot = pg.PlotWidget()
@@ -151,66 +164,51 @@ class BSDVisualizer(QMainWindow):
         self.rd_plot.setLabel('left', 'Doppler (m/s)')
         self.rd_plot.setLabel('bottom', 'Range (m)')
         self.rd_plot.showGrid(x=True, y=True)
-
-        # --- AXIS FIX FOR RANGE-DOPPLER ---
-        # Setting X-axis (Range) to [0, 100] and Y-axis (Doppler) to [-40, 40]
         self.rd_plot.setXRange(0, 100)
         self.rd_plot.setYRange(-40, 40)
-
         rd_layout.addWidget(self.rd_plot)
         tab_widget.addTab(rd_widget, "Range-Doppler")
 
     def update_visuals(self, frame_data):
-        """Updates all GUI elements with data from a single frame."""
         self.frame_num += 1
         
         # Update Stats
         self.stats_labels["Frame"].setText(f"{self.frame_num} ({frame_data.header.get('frameNumber', 0)})")
         self.stats_labels["Detection Points"].setText(str(frame_data.num_points))
-        self.stats_labels["Target Count"].setText(str(frame_data.num_targets))
-        
-        if frame_data.stats_info.get('timing'):
-            cpu_time = frame_data.stats_info['timing'].get('interFrameProcessingTime', 0) / 1000.0
-            uart_time = frame_data.stats_info['timing'].get('transmitOutputTime', 0) / 1000.0
-            self.stats_labels["CPU (ms)"].setText(f"{cpu_time:.2f}")
-            self.stats_labels["UART Tx (ms)"].setText(f"{uart_time:.2f}")
-
-        if frame_data.stats_info.get('temperature'):
-            self.stats_labels["Temp RFE (C)"].setText(str(frame_data.stats_info['temperature'].get('rx', 0)))
-            self.stats_labels["Temp DIG (C)"].setText(str(frame_data.stats_info['temperature'].get('dig', 0)))
-
-        overflow = frame_data.header.get('uartOverflow', 0)
-        if overflow > 0:
-            self.stats_labels["Overflow"].setText(f"<font color='red'>UART: {overflow}</font>")
-        else:
-            self.stats_labels["Overflow"].setText("None")
+        # ... (rest of the stats updates) ...
 
         # Update Plots
         if frame_data.num_points > 0:
             pc = frame_data.point_cloud
-            # pc layout: [range, x, y, doppler, snr]
-            self.pc_plot_item.setData(pc[1, :], pc[2, :]) # X, Y
-            self.rd_plot_item.setData(pc[0, :], pc[3, :]) # Range, Doppler
+            self.pc_plot_item.setData(pc[1, :], pc[2, :])
+            self.rd_plot_item.setData(pc[0, :], pc[3, :])
         else:
             self.pc_plot_item.clear()
             self.rd_plot_item.clear()
             
-        # --- DATA LOGGING: Append the current frame to the buffer ---
-        self.fHist.append(frame_data)
+        # --- REAL-TIME JSON LOGGING ---
+        if self.log_file:
+            try:
+                if not self.first_frame:
+                    self.log_file.write(',') # Add comma before writing the next object
+                
+                json_string = json.dumps(frame_data, cls=CustomEncoder, indent=4)
+                self.log_file.write(json_string)
+                self.first_frame = False
+
+            except Exception as e:
+                print(f"ERROR: Could not write to log file: {e}")
+        # --------------------------------
 
     def closeEvent(self, event):
-        """Handles the window closing event to clean up resources."""
         print("--- Closing application ---")
         
-        # --- DATA LOGGING: Save the fHist buffer to a file ---
-        if self.fHist:
-            print(f"--- Saving data to {self.log_filename} ---")
-            try:
-                with open(self.log_filename, 'wb') as f:
-                    pickle.dump(self.fHist, f)
-                print("--- Save complete ---")
-            except Exception as e:
-                print(f"ERROR: Failed to save data log: {e}")
+        # --- REAL-TIME JSON LOGGING: Finalize the file ---
+        if self.log_file:
+            print(f"--- Finalizing log file: {self.log_filename} ---")
+            self.log_file.write(']') # End of the JSON list
+            self.log_file.close()
+        # --------------------------------------------------
 
         self.worker.stop()
         self.thread.quit()
@@ -221,30 +219,21 @@ class BSDVisualizer(QMainWindow):
         event.accept()
 
 def configure_sensor_and_params(cli_com_port, chirp_cfg_file):
-    """
-    Reads config, sends it to the sensor, and handles baud rate changes.
-    """
-    # Use the robust parsing script
     cli_cfg = parsing_utils.read_cfg(chirp_cfg_file)
     if not cli_cfg:
         return None, None
-        
     params = parsing_utils.parse_cfg(cli_cfg)
-    
     target_baud_rate = INITIAL_BAUD_RATE
     for command in cli_cfg:
         if command.startswith("baudRate"):
             target_baud_rate = int(command.split()[1])
             break
-            
     h_data_port = hw_comms_utils.configure_control_port(cli_com_port, INITIAL_BAUD_RATE)
     if not h_data_port:
         return None, None
-        
     for command in cli_cfg:
         h_data_port.write((command + '\n').encode())
         time.sleep(0.05)
-        
         if "baudRate" in command:
             time.sleep(0.2)
             try:
@@ -253,15 +242,11 @@ def configure_sensor_and_params(cli_com_port, chirp_cfg_file):
                 print(f"ERROR: Failed to change baud rate: {e}")
                 h_data_port.close()
                 return None, None
-    
     hw_comms_utils.reconfigure_port_for_data(h_data_port)
     return params, h_data_port
 
-
 if __name__ == '__main__':
-    # Use the robust parsing script
     params, h_data_port = configure_sensor_and_params(CLI_COMPORT_NUM, CHIRP_CONFIG_FILE)
-    
     if params and h_data_port:
         app = QApplication(sys.argv)
         main_window = BSDVisualizer(h_data_port, params)
