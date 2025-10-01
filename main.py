@@ -16,7 +16,16 @@ import read_and_parse_frame
 from read_and_parse_frame import FrameData
 
 # --- Configuration ---
-CLI_COMPORT_NUM = '/dev/ttyACM0'
+if sys.platform == "win32":
+    # Windows COM Port Name
+    CLI_COMPORT_NUM = 'COM11' # <-- ADJUST THIS to your COM port number on Windows
+elif sys.platform == "linux":
+    # Raspberry Pi (Linux) COM Port Name
+    CLI_COMPORT_NUM = '/dev/ttyACM0'
+else:
+    # Fallback for other systems (e.g., macOS)
+    print(f"Unsupported OS '{sys.platform}' detected. Please set COM port manually.")
+    CLI_COMPORT_NUM = None # Or a default value
 CHIRP_CONFIG_FILE = 'profile_80m_40mpsec_bsdevm_16tracks_dyClutter.cfg'
 INITIAL_BAUD_RATE = 115200
 
