@@ -247,28 +247,56 @@ class BSDVisualizer(QMainWindow):
         event.accept()
 
 def configure_sensor_and_params(cli_com_port, chirp_cfg_file):
-    # ... (This function remains the same)
     cli_cfg = parsing_utils.read_cfg(chirp_cfg_file)
-    if not cli_cfg: return None, None
+    if not cli_cfg:
+        return None, None
+
     params = parsing_utils.parse_cfg(cli_cfg)
+    
+    # Find the target baud rate from the config file
     target_baud_rate = INITIAL_BAUD_RATE
     for command in cli_cfg:
         if command.startswith("baudRate"):
-            target_baud_rate = int(command.split()[1])
+            try:
+                target_baud_rate = int(command.split()[1])
+            except (ValueError, IndexError):
+                print(f"Warning: Could not parse baud rate from command: {command}")
             break
+
     h_data_port = hw_comms_utils.configure_control_port(cli_com_port, INITIAL_BAUD_RATE)
-    if not h_data_port: return None, None
+    if not h_data_port:
+        return None, None
+        
+    print("\n--- Sending configuration commands ---")
     for command in cli_cfg:
+        # Print the command being sent
+        print(f"> {command}")
+        
+        # Send the command
         h_data_port.write((command + '\n').encode())
-        time.sleep(0.05)
+        
+        # Wait for a moment to allow the device to process and respond
+        time.sleep(0.1)
+        
+        # Read any available response from the input buffer
+        if h_data_port.in_waiting > 0:
+            response = h_data_port.read(h_data_port.in_waiting).decode('latin-1')
+            print(f"  {response.strip()}")
+
+        # Special handling for baudRate command
         if "baudRate" in command:
-            time.sleep(0.2)
+            print("  Changing baud rate...")
+            time.sleep(0.2)  # Give some extra time for the baud rate change
             try:
                 h_data_port.baudrate = target_baud_rate
+                print(f"  Baud rate set to {target_baud_rate}")
             except Exception as e:
                 print(f"ERROR: Failed to change baud rate: {e}")
                 h_data_port.close()
                 return None, None
+
+    print("--- Configuration complete ---\n")
+    
     hw_comms_utils.reconfigure_port_for_data(h_data_port)
     return params, h_data_port
 
