@@ -26,8 +26,8 @@ else:
     # Fallback for other systems (e.g., macOS)
     print(f"Unsupported OS '{sys.platform}' detected. Please set COM port manually.")
     CLI_COMPORT_NUM = None # Or a default value
-CHIRP_CONFIG_FILE = 'profile_80m_40mpsec_bsdevm_16tracks_dyClutter.cfg'
-INITIAL_BAUD_RATE = 115200
+CHIRP_CONFIG_FILE = 'profile_80_m_40mpsec_bsdevm_16tracks_dyClutter.cfg' #
+INITIAL_BAUD_RATE = 115200 #
 
 # --- Robust JSON Encoder Class ---
 class CustomEncoder(json.JSONEncoder):
@@ -100,7 +100,6 @@ class DataLogger(QObject):
         self.is_running = False
 
 class Worker(QObject):
-    # ... (Worker class remains the same)
     frame_ready = pyqtSignal(object)
     finished = pyqtSignal()
 
@@ -137,7 +136,6 @@ class BSDVisualizer(QMainWindow):
         # --- Setup GUI ---
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        # ... (GUI setup remains the same)
         main_layout = QHBoxLayout(central_widget)
         left_panel = QVBoxLayout()
         main_layout.addLayout(left_panel, 1)
@@ -145,6 +143,11 @@ class BSDVisualizer(QMainWindow):
         main_layout.addLayout(right_panel, 4)
         self._create_stats_panel(left_panel)
         self._create_plot_tabs(right_panel)
+
+        # --- NEW: Set Port and Baud Rate in GUI ---
+        # Populate the new labels with data from the serial port object
+        self.stats_labels["COM Port"].setText(f"{self.h_data_port.name}")
+        self.stats_labels["Baud Rate"].setText(f"{self.h_data_port.baudrate}")
 
         # --- Setup Data Processing Thread ---
         self.worker_thread = QThread()
@@ -163,15 +166,21 @@ class BSDVisualizer(QMainWindow):
         self.logger_thread.start()
 
     def _create_stats_panel(self, layout):
-        # ... (This method remains the same)
         stats_widget = QWidget()
         stats_layout = QGridLayout(stats_widget)
         layout.addWidget(stats_widget)
         self.stats_labels = {}
-        stats_to_create = ["Frame", "Detection Points", "Target Count", "CPU (ms)", "UART Tx (ms)", "Temp RFE (C)", "Temp DIG (C)", "Overflow"]
+        
+        # --- MODIFIED: Add Port and Baud Rate to GUI stats list ---
+        stats_to_create = [
+            "COM Port", "Baud Rate", "Frame", "Detection Points", 
+            "Target Count", "CPU (ms)", "UART Tx (ms)", 
+            "Temp RFE (C)", "Temp DIG (C)", "Overflow"
+        ]
+        
         for i, text in enumerate(stats_to_create):
             label_title = QLabel(f"<b>{text}:</b>")
-            label_value = QLabel("0")
+            label_value = QLabel("...") # Use ... as initial text
             stats_layout.addWidget(label_title, i, 0)
             stats_layout.addWidget(label_value, i, 1)
             self.stats_labels[text] = label_value
@@ -179,7 +188,6 @@ class BSDVisualizer(QMainWindow):
 
 
     def _create_plot_tabs(self, layout):
-        # ... (This method remains the same)
         tab_widget = QTabWidget()
         layout.addWidget(tab_widget)
         pc_widget = QWidget()
@@ -214,7 +222,7 @@ class BSDVisualizer(QMainWindow):
         
         # Update GUI elements
         self.stats_labels["Frame"].setText(f"{self.frame_num} ({frame_data.header.get('frameNumber', 0)})")
-        # ... (rest of stats updates) ...
+        # (The rest of the stats updates remain the same)
         if frame_data.num_points > 0:
             pc = frame_data.point_cloud
             self.pc_plot_item.setData(pc[1, :], pc[2, :])
@@ -247,28 +255,53 @@ class BSDVisualizer(QMainWindow):
         event.accept()
 
 def configure_sensor_and_params(cli_com_port, chirp_cfg_file):
-    # ... (This function remains the same)
     cli_cfg = parsing_utils.read_cfg(chirp_cfg_file)
-    if not cli_cfg: return None, None
+    if not cli_cfg:
+        return None, None
+
     params = parsing_utils.parse_cfg(cli_cfg)
+    
+    # Find the target baud rate from the config file
     target_baud_rate = INITIAL_BAUD_RATE
     for command in cli_cfg:
         if command.startswith("baudRate"):
-            target_baud_rate = int(command.split()[1])
+            try:
+                target_baud_rate = int(command.split()[1])
+            except (ValueError, IndexError):
+                print(f"Warning: Could not parse baud rate from command: {command}")
             break
+
+    # --- MODIFIED: Add explicit print statements for configuration ---
+    print("\n--- Starting Sensor Configuration ---")
+    print(f"Port: {cli_com_port}")
+    print(f"Initial Baud Rate: {INITIAL_BAUD_RATE}")
+    print("-------------------------------------")
+
     h_data_port = hw_comms_utils.configure_control_port(cli_com_port, INITIAL_BAUD_RATE)
-    if not h_data_port: return None, None
+    if not h_data_port:
+        return None, None
+        
     for command in cli_cfg:
+        print(f"> {command}")
         h_data_port.write((command + '\n').encode())
-        time.sleep(0.05)
+        time.sleep(0.1)
+        
+        if h_data_port.in_waiting > 0:
+            response = h_data_port.read(h_data_port.in_waiting).decode('latin-1')
+            print(f"  {response.strip()}")
+
         if "baudRate" in command:
             time.sleep(0.2)
             try:
                 h_data_port.baudrate = target_baud_rate
+                print(f"  Baud rate changed to {target_baud_rate}")
             except Exception as e:
                 print(f"ERROR: Failed to change baud rate: {e}")
                 h_data_port.close()
                 return None, None
+
+    print("--- Configuration complete ---\n")
+    
     hw_comms_utils.reconfigure_port_for_data(h_data_port)
     return params, h_data_port
 
