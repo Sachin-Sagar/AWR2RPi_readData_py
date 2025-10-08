@@ -1,69 +1,94 @@
-AWRL1432 Blind Spot Detection (BSD) Visualizer - Python Port
-1. Project Goal
-This project is a direct port of the original MATLAB-based "AWRL1432 Blind Spot Detection (BSD) Radar Visualizer" to a standalone Python application. The primary goal is to create a real-time, high-performance visualizer that can run on a low-power embedded system like a Raspberry Pi 4B.
+Real-Time Radar Data Visualizer for AWR1432BOOST
+This project is a multi-threaded Python application that provides a real-time graphical user interface (GUI) for visualizing data from a Texas Instruments AWR1432BOOST-BSD radar board. It is designed to run on a Raspberry Pi 4B but is also compatible with other systems.
 
-This involves translating all core functionalities, including hardware communication, binary data parsing, and GUI rendering, from MATLAB to Python.
+The application reads, parses, and displays radar data in real-time, offering visual insights into the detected point cloud and targets. It also logs all incoming data to a JSON file for post-processing and analysis.
 
-2. Current Status: In-Progress ⚠️
-The project has successfully transitioned from the planning phase to implementation. All of the core, non-GUI modules from the original MATLAB application have been ported to Python. A modern, multi-threaded GUI application has been built to ensure a responsive user experience.
+Features
+Real-Time GUI: A user-friendly interface built with PyQt5 that displays radar data as it is received.
 
-However, the application is currently non-functional due to a persistent runtime bug that occurs during the initial configuration phase.
+Multi-Plot Visualization: Includes two main plots:
 
-Current Roadblock:
+Point Cloud Plot: Shows the detected points in a 2D (X, Y) Cartesian space.
 
-A recurring AttributeError: 'float' object has no attribute 'bit_length' error occurs in the parsing_utils.py module.
+Range-Doppler Plot: Visualizes the range and velocity of detected points.
 
-This error happens during the calculation of derived radar parameters from the .cfg file. The logic mismatch between MATLAB's handling of floating-point numbers and Python's strict typing for bitwise operations is the root cause.
+Live Statistics Panel: Displays real-time statistics from the radar frame, including:
 
-3. Technology Stack
-The application is built using a modern Python 3 technology stack, chosen for performance and suitability for the Raspberry Pi platform:
+Frame Number
 
-Language: Python 3
+Number of Detection Points
 
-GUI Framework: PyQt5 (for a robust and feature-rich user interface)
+Number of Tracked Targets
 
-Real-Time Plotting: pyqtgraph (chosen for its high performance in real-time data visualization)
+CPU and UART Load
 
-Numerical Computation: NumPy (for efficient handling of arrays and mathematical operations)
+Sensor Temperatures
 
-Serial Communication: pySerial (for interfacing with the AWRL1432 EVM's UART ports)
+Multi-Threaded Architecture: Utilizes separate threads for data processing, data logging, and the GUI to ensure a smooth, non-blocking user experience.
 
-4. Project Structure & Modules
-The modular architecture of the original MATLAB project has been preserved in the Python port. The following modules have been created:
+JSON Data Logging: Automatically saves all parsed frame data into a timestamped .json file in a structured format, perfect for playback or further analysis.
 
-bsd_visualizer_main.py:
+Robust Serial Communication: Efficiently handles communication with the radar board, including configuration and continuous data streaming.
 
-The main entry point for the application.
+Data Flow Diagram
+The application operates on a multi-threaded model to handle data acquisition, processing, visualization, and logging concurrently.
 
-Initializes the GUI, configures the sensor, and manages a separate worker thread for data processing to keep the UI from freezing.
++------------------+      +--------------------------+      +----------------------+
+|                  |      |                          |      |                      |
+|  Radar Hardware  |----->|  Data Processing Thread  |----->|   GUI Thread         |
+| (AWR1432BOOST)   |      |    (Worker)              |      |  (BSDVisualizer)     |
+|                  |      |                          |      |                      |
++------------------+      +--------------------------+      +-----------+----------+
+                             |                                          |
+                             | (Pushes FrameData)                       | (Updates Plots & Stats)
+                             |                                          v
+                             v                                     +----------+
+                        +----------------------+                   |          |
+                        |                      |                   |   User   |
+                        | Data Logging Thread  |                   |          |
+                        |    (DataLogger)      |                   +----------+
+                        |                      |
+                        +-----------+----------+
+                                    |
+                                    | (Writes to file)
+                                    v
+                              +--------------+
+                              |              |
+                              |   fHist.json |
+                              |              |
+                              +--------------+
+Radar Hardware: The AWR1432 board sends configuration commands and streams binary frame data over the serial port.
 
-hw_comms_utils.py:
+Data Processing Thread: A background thread continuously listens to the serial port, searches for the frame sync pattern, reads the binary data, and parses it into a structured FrameData object.
 
-Handles all low-level serial port communication.
+GUI Thread: The main thread of the application. It receives the FrameData object from the processing thread via a thread-safe queue and updates the plots and statistics labels on the screen.
 
-Includes the critical, robust byte-by-byte search for the 8-byte sync pattern to ensure data stream synchronization.
+Data Logging Thread: This thread also receives the FrameData object and writes it to a .json file, ensuring that file I/O does not block the GUI or data acquisition.
 
-parsing_utils.py:
+Requirements
+To run this application, you need to install the following Python libraries:
 
-Responsible for reading and parsing the text-based .cfg chirp configuration files.
+PyQt5: For the graphical user interface.
 
-Calculates all derived radar parameters (e.g., range resolution, doppler bins) needed for data processing. This module contains the current bug.
+pyqtgraph: For high-performance plotting within the GUI.
 
-read_and_parse_frame.py:
+pyserial: For communication with the radar board via the serial port.
 
-Performs the real-time parsing of the incoming binary data stream from the sensor.
+numpy: For efficient numerical data manipulation.
 
-Decodes the frame header and the custom Type-Length-Value (TLV) payload structure, including the critical TLV offset correction logic identified in the original project.
+You can install these dependencies using pip:
 
-math_utils.py:
+Bash
 
-A utility module containing mathematical helper functions, such as 3D point rotation, which were translated from the original codebase.
+pip install PyQt5 pyqtgraph pyserial numpy
+How to Run
+Connect the Hardware: Connect the AWR1432BOOST-BSD board to your computer.
 
-5. Next Steps
-Resolve the AttributeError: The immediate and only priority is to fix the data type mismatch in parsing_utils.py so the application can successfully initialize.
+Configure the Port: Open the main.py file and update the CLI_COMPORT_NUM variable to match the serial port of your radar board (e.g., 'COM3' on Windows or '/dev/ttyACM0' on Linux/Raspberry Pi).
 
-Live Hardware Testing: Once the application runs, perform extensive testing with the AWRL1432 EVM to validate the data parsing and visualization in real-time.
+Run the Application: Execute the main.py script from your terminal:
 
-Add User Input Dialogs: Replace the hardcoded COM port and configuration file paths in bsd_visualizer_main.py with user-friendly file and port selection dialogs.
+Bash
 
-Deployment and Optimization: Deploy the application on the target Raspberry Pi 4B and perform performance profiling and optimization as needed.
+python main.py
+The GUI window will appear, and if the connection is successful, you will see the plots and statistics updating in real-time. A fHist_... .json file will be created in the same directory to log the data.

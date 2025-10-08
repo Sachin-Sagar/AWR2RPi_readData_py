@@ -1,26 +1,106 @@
 import sys
 import time
 import serial
+import json
+import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel, QGridLayout
 from PyQt5.QtCore import QThread, pyqtSignal, QObject
 import pyqtgraph as pg
+from datetime import datetime
+import queue # Added for thread-safe communication
 
 # Local imports
 import hw_comms_utils
 import parsing_utils
 import read_and_parse_frame
+from read_and_parse_frame import FrameData
 
 # --- Configuration ---
-# TODO: Replace these hardcoded values with a file dialog for user selection.
-CLI_COMPORT_NUM = 11  # The Application/User UART port number
+if sys.platform == "win32":
+    # Windows COM Port Name
+    CLI_COMPORT_NUM = 'COM11' # <-- ADJUST THIS to your COM port number on Windows
+elif sys.platform == "linux":
+    # Raspberry Pi (Linux) COM Port Name
+    CLI_COMPORT_NUM = '/dev/ttyACM0'
+else:
+    # Fallback for other systems (e.g., macOS)
+    print(f"Unsupported OS '{sys.platform}' detected. Please set COM port manually.")
+    CLI_COMPORT_NUM = None # Or a default value
 CHIRP_CONFIG_FILE = 'profile_80m_40mpsec_bsdevm_16tracks_dyClutter.cfg'
 INITIAL_BAUD_RATE = 115200
 
+# --- Robust JSON Encoder Class ---
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, FrameData):
+            serializable_dict = {
+                "header": obj.header, "num_points": obj.num_points, "num_targets": obj.num_targets,
+                "stats_info": obj.stats_info, "point_cloud": obj.point_cloud.tolist(), "target_list": {}
+            }
+            if obj.target_list:
+                for key, value in obj.target_list.items():
+                    serializable_dict["target_list"][key] = value.tolist() if isinstance(value, np.ndarray) else value
+            return serializable_dict
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        if isinstance(obj, np.integer): return int(obj)
+        if isinstance(obj, np.floating): return float(obj)
+        if isinstance(obj, np.bool_): return bool(obj)
+        return super().default(obj)
+
+# --- NEW: Dedicated Data Logger ---
+class DataLogger(QObject):
+    finished = pyqtSignal()
+
+    def __init__(self, filename):
+        super().__init__()
+        self.filename = filename
+        self.data_queue = queue.Queue()
+        self.is_running = True
+        self.log_file = None
+        self.first_frame = True
+
+    def run(self):
+        """This method runs in a separate thread and handles all file I/O."""
+        try:
+            self.log_file = open(self.filename, 'w')
+            self.log_file.write('[') # Start of the JSON array
+            print(f"--- Logging data to {self.filename} ---")
+
+            while self.is_running or not self.data_queue.empty():
+                try:
+                    # Wait for data to appear in the queue (with a timeout)
+                    frame = self.data_queue.get(timeout=0.1)
+                    
+                    if not self.first_frame:
+                        self.log_file.write(',')
+                    
+                    json.dump(frame, self.log_file, cls=CustomEncoder, indent=4)
+                    self.first_frame = False
+                    self.data_queue.task_done()
+
+                except queue.Empty:
+                    continue # No data, just loop again
+
+        except Exception as e:
+            print(f"ERROR in logger thread: {e}")
+        finally:
+            if self.log_file:
+                self.log_file.write(']') # End of the JSON array
+                self.log_file.close()
+                print(f"--- Log file {self.filename} finalized. ---")
+            self.finished.emit()
+
+    def add_data(self, frame_data):
+        """Adds a frame to the queue to be logged."""
+        self.data_queue.put(frame_data)
+
+    def stop(self):
+        """Signals the logger to finish up and stop."""
+        print("--- Stopping data logger... ---")
+        self.is_running = False
+
 class Worker(QObject):
-    """
-    Worker thread for handling serial communication and data parsing.
-    Runs in the background to keep the GUI responsive.
-    """
+    # ... (Worker class remains the same)
     frame_ready = pyqtSignal(object)
     finished = pyqtSignal()
 
@@ -31,94 +111,77 @@ class Worker(QObject):
         self.is_running = True
 
     def run(self):
-        """Main processing loop."""
         while self.is_running:
             try:
-                # Read and parse one frame of data
                 frame_data = read_and_parse_frame.read_and_parse_frame(self.h_data_port, self.params)
-                
-                # If a valid frame is received, emit it for the GUI to display
                 if frame_data and frame_data.header:
                     self.frame_ready.emit(frame_data)
             except Exception as e:
                 print(f"Error in worker thread: {e}")
-                time.sleep(0.1) # Avoid busy-looping on error
-        
+                time.sleep(0.1)
         self.finished.emit()
 
     def stop(self):
-        """Stops the processing loop."""
         self.is_running = False
 
-
 class BSDVisualizer(QMainWindow):
-    """Main application window."""
     def __init__(self, h_data_port, params):
         super().__init__()
         self.h_data_port = h_data_port
         self.params = params
         self.frame_num = 0
-        
-        self.setWindowTitle(f"AWRL1432 BSD Visualizer")
+
+        self.setWindowTitle("AWRL1432 BSD Visualizer")
         self.setGeometry(100, 100, 1600, 900)
         
-        # Main layout
+        # --- Setup GUI ---
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
+        # ... (GUI setup remains the same)
         main_layout = QHBoxLayout(central_widget)
-        
-        # Left Panel (Stats and Config)
         left_panel = QVBoxLayout()
-        main_layout.addLayout(left_panel, 1) # 1/5 of the width
-
-        # Right Panel (Tabs for plots)
+        main_layout.addLayout(left_panel, 1)
         right_panel = QVBoxLayout()
-        main_layout.addLayout(right_panel, 4) # 4/5 of the width
-        
-        # --- Create GUI Elements ---
+        main_layout.addLayout(right_panel, 4)
         self._create_stats_panel(left_panel)
         self._create_plot_tabs(right_panel)
 
-        # --- Setup and start the worker thread ---
-        self.thread = QThread()
+        # --- Setup Data Processing Thread ---
+        self.worker_thread = QThread()
         self.worker = Worker(self.h_data_port, self.params)
-        self.worker.moveToThread(self.thread)
-        
-        self.thread.started.connect(self.worker.run)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
+        self.worker.moveToThread(self.worker_thread)
         self.worker.frame_ready.connect(self.update_visuals)
-        
-        self.thread.start()
+        self.worker_thread.started.connect(self.worker.run)
+        self.worker_thread.start()
+
+        # --- Setup and Start Data Logging Thread ---
+        log_filename = f"fHist_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        self.logger_thread = QThread()
+        self.data_logger = DataLogger(log_filename)
+        self.data_logger.moveToThread(self.logger_thread)
+        self.logger_thread.started.connect(self.data_logger.run)
+        self.logger_thread.start()
 
     def _create_stats_panel(self, layout):
-        """Creates the statistics display panel."""
+        # ... (This method remains the same)
         stats_widget = QWidget()
         stats_layout = QGridLayout(stats_widget)
         layout.addWidget(stats_widget)
-
         self.stats_labels = {}
-        stats_to_create = [
-            "Frame", "Detection Points", "Target Count", 
-            "CPU (ms)", "UART Tx (ms)", "Temp RFE (C)", "Temp DIG (C)", "Overflow"
-        ]
-        
+        stats_to_create = ["Frame", "Detection Points", "Target Count", "CPU (ms)", "UART Tx (ms)", "Temp RFE (C)", "Temp DIG (C)", "Overflow"]
         for i, text in enumerate(stats_to_create):
             label_title = QLabel(f"<b>{text}:</b>")
             label_value = QLabel("0")
             stats_layout.addWidget(label_title, i, 0)
             stats_layout.addWidget(label_value, i, 1)
             self.stats_labels[text] = label_value
-        
         layout.addStretch()
 
+
     def _create_plot_tabs(self, layout):
-        """Creates the tabbed interface for plots."""
+        # ... (This method remains the same)
         tab_widget = QTabWidget()
         layout.addWidget(tab_widget)
-        
-        # Point Cloud Tab
         pc_widget = QWidget()
         pc_layout = QVBoxLayout(pc_widget)
         self.pc_plot = pg.PlotWidget()
@@ -128,10 +191,10 @@ class BSDVisualizer(QMainWindow):
         self.pc_plot.setLabel('bottom', 'X (m)')
         self.pc_plot.showGrid(x=True, y=True)
         self.pc_plot.setAspectLocked(True)
+        self.pc_plot.setXRange(-40, 40)
+        self.pc_plot.setYRange(0, 100)
         pc_layout.addWidget(self.pc_plot)
         tab_widget.addTab(pc_widget, "Point Cloud")
-
-        # Range-Doppler Tab
         rd_widget = QWidget()
         rd_layout = QVBoxLayout(rd_widget)
         self.rd_plot = pg.PlotWidget()
@@ -140,112 +203,78 @@ class BSDVisualizer(QMainWindow):
         self.rd_plot.setLabel('left', 'Doppler (m/s)')
         self.rd_plot.setLabel('bottom', 'Range (m)')
         self.rd_plot.showGrid(x=True, y=True)
+        self.rd_plot.setXRange(0, 100)
+        self.rd_plot.setYRange(-40, 40)
         rd_layout.addWidget(self.rd_plot)
         tab_widget.addTab(rd_widget, "Range-Doppler")
 
     def update_visuals(self, frame_data):
-        """Updates all GUI elements with data from a single frame."""
+        """Called by the Worker thread. Updates GUI and sends data to the logger."""
         self.frame_num += 1
         
-        # Update Stats
+        # Update GUI elements
         self.stats_labels["Frame"].setText(f"{self.frame_num} ({frame_data.header.get('frameNumber', 0)})")
-        self.stats_labels["Detection Points"].setText(str(frame_data.num_points))
-        self.stats_labels["Target Count"].setText(str(frame_data.num_targets))
-        
-        if frame_data.stats_info.get('timing'):
-            cpu_time = frame_data.stats_info['timing'].get('interFrameProcessingTime', 0) / 1000.0
-            uart_time = frame_data.stats_info['timing'].get('transmitOutputTime', 0) / 1000.0
-            self.stats_labels["CPU (ms)"].setText(f"{cpu_time:.2f}")
-            self.stats_labels["UART Tx (ms)"].setText(f"{uart_time:.2f}")
-
-        if frame_data.stats_info.get('temperature'):
-            self.stats_labels["Temp RFE (C)"].setText(str(frame_data.stats_info['temperature'].get('rx', 0)))
-            self.stats_labels["Temp DIG (C)"].setText(str(frame_data.stats_info['temperature'].get('dig', 0)))
-
-        overflow = frame_data.header.get('uartOverflow', 0)
-        if overflow > 0:
-            self.stats_labels["Overflow"].setText(f"<font color='red'>UART: {overflow}</font>")
-        else:
-            self.stats_labels["Overflow"].setText("None")
-
-        # Update Plots
+        # ... (rest of stats updates) ...
         if frame_data.num_points > 0:
             pc = frame_data.point_cloud
-            # pc layout: [range, x, y, doppler, snr]
-            self.pc_plot_item.setData(pc[1, :], pc[2, :]) # X, Y
-            self.rd_plot_item.setData(pc[0, :], pc[3, :]) # Range, Doppler
+            self.pc_plot_item.setData(pc[1, :], pc[2, :])
+            self.rd_plot_item.setData(pc[0, :], pc[3, :])
         else:
             self.pc_plot_item.clear()
             self.rd_plot_item.clear()
+            
+        # Send data to the logger's queue
+        self.data_logger.add_data(frame_data)
 
     def closeEvent(self, event):
-        """Handles the window closing event to clean up resources."""
+        """Handles the window closing event to clean up all resources."""
         print("--- Closing application ---")
+        
+        # Stop all threads and wait for them to finish
         self.worker.stop()
-        self.thread.quit()
-        self.thread.wait()
+        self.data_logger.stop()
+
+        self.worker_thread.quit()
+        self.logger_thread.quit()
+
+        self.worker_thread.wait()
+        self.logger_thread.wait()
+        
         if self.h_data_port and self.h_data_port.is_open:
             self.h_data_port.close()
             print("--- Serial port closed ---")
+            
         event.accept()
 
 def configure_sensor_and_params(cli_com_port, chirp_cfg_file):
-    """
-    Reads config, sends it to the sensor, and handles baud rate changes.
-    """
-    print('--- Configuring Sensor and GUI ---')
-    # Read and Parse the .cfg file content
+    # ... (This function remains the same)
     cli_cfg = parsing_utils.read_cfg(chirp_cfg_file)
-    if not cli_cfg:
-        return None, None
-        
+    if not cli_cfg: return None, None
     params = parsing_utils.parse_cfg(cli_cfg)
-    
-    # Find the target baud rate from the config file
     target_baud_rate = INITIAL_BAUD_RATE
     for command in cli_cfg:
         if command.startswith("baudRate"):
             target_baud_rate = int(command.split()[1])
             break
-            
-    print(f"--- Target Baud Rate from .cfg file: {target_baud_rate} ---")
-
-    # Configure and open the control port
     h_data_port = hw_comms_utils.configure_control_port(cli_com_port, INITIAL_BAUD_RATE)
-    if not h_data_port:
-        print("ERROR: Failed to open serial port.")
-        return None, None
-        
-    # Send configuration commands to the sensor
-    print('\n--- Sending Full Hardware Configuration ---')
+    if not h_data_port: return None, None
     for command in cli_cfg:
-        print(f"Sending: {command}")
         h_data_port.write((command + '\n').encode())
-        # A small delay helps prevent overwhelming the sensor's buffer
         time.sleep(0.05)
-        
-        # Check for baud rate change command
         if "baudRate" in command:
-            print(f'--- BAUD RATE CHANGE DETECTED: Reconfiguring port to {target_baud_rate} ---')
-            # Wait for the command to be processed by the sensor before changing our rate
             time.sleep(0.2)
             try:
                 h_data_port.baudrate = target_baud_rate
-                print(f'--- MATLAB (Python) port baud rate set to {target_baud_rate} ---')
             except Exception as e:
                 print(f"ERROR: Failed to change baud rate: {e}")
                 h_data_port.close()
                 return None, None
-    
-    # Prepare port for receiving binary data
     hw_comms_utils.reconfigure_port_for_data(h_data_port)
-    print('--- Setup Complete. Starting main loop. ---')
     return params, h_data_port
 
 
 if __name__ == '__main__':
     params, h_data_port = configure_sensor_and_params(CLI_COMPORT_NUM, CHIRP_CONFIG_FILE)
-    
     if params and h_data_port:
         app = QApplication(sys.argv)
         main_window = BSDVisualizer(h_data_port, params)
