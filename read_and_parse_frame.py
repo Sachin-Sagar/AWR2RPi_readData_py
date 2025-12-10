@@ -75,6 +75,7 @@ class FrameData:
         self.target_list = {}
         self.num_targets = 0
         self.stats_info = {}
+        self.timestamp = 0.0
 
 def read_and_parse_frame(h_data_port, params):
     """

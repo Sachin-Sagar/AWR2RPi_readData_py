@@ -3,6 +3,7 @@ import time
 import serial
 import json
 import numpy as np
+import os
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel, QGridLayout
 from PyQt5.QtCore import QThread, pyqtSignal, QObject
 import pyqtgraph as pg
@@ -34,6 +35,7 @@ class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, FrameData):
             serializable_dict = {
+                "timestamp": obj.timestamp,
                 "header": obj.header, "num_points": obj.num_points, "num_targets": obj.num_targets,
                 "stats_info": obj.stats_info, "point_cloud": obj.point_cloud.tolist(), "target_list": {}
             }
@@ -114,6 +116,7 @@ class Worker(QObject):
             try:
                 frame_data = read_and_parse_frame.read_and_parse_frame(self.h_data_port, self.params)
                 if frame_data and frame_data.header:
+                    frame_data.timestamp = time.time()
                     self.frame_ready.emit(frame_data)
             except Exception as e:
                 print(f"Error in worker thread: {e}")
@@ -158,7 +161,10 @@ class BSDVisualizer(QMainWindow):
         self.worker_thread.start()
 
         # --- Setup and Start Data Logging Thread ---
-        log_filename = f"fHist_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        output_dir = "output"
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        log_filename = os.path.join(output_dir, f"fHist_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
         self.logger_thread = QThread()
         self.data_logger = DataLogger(log_filename)
         self.data_logger.moveToThread(self.logger_thread)
