@@ -19,7 +19,7 @@ from read_and_parse_frame import FrameData
 # --- Configuration ---
 if sys.platform == "win32":
     # Windows COM Port Name
-    CLI_COMPORT_NUM = 'COM11' # <-- ADJUST THIS to your COM port number on Windows
+    CLI_COMPORT_NUM = 'COM8' # <-- ADJUST THIS to your COM port number on Windows
 elif sys.platform == "linux":
     # Raspberry Pi (Linux) COM Port Name
     CLI_COMPORT_NUM = '/dev/ttyACM0'
@@ -36,6 +36,8 @@ class CustomEncoder(json.JSONEncoder):
         if isinstance(obj, FrameData):
             serializable_dict = {
                 "timestamp": obj.timestamp,
+                "delta_t": getattr(obj, "delta_t", 0.0),
+                "rel_frame_num": getattr(obj, "rel_frame_num", 0),
                 "header": obj.header, "num_points": obj.num_points, "num_targets": obj.num_targets,
                 "stats_info": obj.stats_info, "point_cloud": obj.point_cloud.tolist(), "target_list": {}
             }
@@ -132,6 +134,7 @@ class BSDVisualizer(QMainWindow):
         self.h_data_port = h_data_port
         self.params = params
         self.frame_num = 0
+        self.prev_timestamp = None
 
         self.setWindowTitle("AWRL1432 BSD Visualizer")
         self.setGeometry(100, 100, 1600, 900)
@@ -226,6 +229,18 @@ class BSDVisualizer(QMainWindow):
         """Called by the Worker thread. Updates GUI and sends data to the logger."""
         self.frame_num += 1
         
+        # Calculate delta_t
+        current_time = frame_data.timestamp
+        if self.prev_timestamp is not None:
+            delta_t = current_time - self.prev_timestamp
+        else:
+            delta_t = 0.0
+        self.prev_timestamp = current_time
+
+        # Attach new fields to frame_data for logging
+        frame_data.delta_t = delta_t
+        frame_data.rel_frame_num = self.frame_num
+
         # Update GUI elements
         self.stats_labels["Frame"].setText(f"{self.frame_num} ({frame_data.header.get('frameNumber', 0)})")
         # (The rest of the stats updates remain the same)

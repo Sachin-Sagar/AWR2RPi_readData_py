@@ -134,9 +134,21 @@ def analyze_radar_log(file_path):
     std_dt_ms = np.std(valid_intervals_ms)
     max_dt_ms = np.max(valid_intervals_ms)
     min_dt_ms = np.min(valid_intervals_ms)
+    median_dt_ms = np.median(valid_intervals_ms)
     
+    # Define bins (2ms width)
+    max_val_ms = max(200, max_dt_ms + 50) 
+    bins = np.arange(0, max_val_ms, 2) 
+
+    # Calculate mode for binned data
+    counts, bin_edges = np.histogram(valid_intervals_ms, bins=bins)
+    mode_idx = np.argmax(counts)
+    mode_dt_ms = (bin_edges[mode_idx] + bin_edges[mode_idx+1]) / 2
+
     print("\n--- Timing Statistics ---")
     print(f"Mean Interval: {mean_dt_ms:.2f} ms")
+    print(f"Median Interval: {median_dt_ms:.2f} ms")
+    print(f"Mode Interval: {mode_dt_ms:.2f} ms")
     print(f"Std Dev:       {std_dt_ms:.2f} ms")
     print(f"Min Interval:  {min_dt_ms:.2f} ms")
     print(f"Max Interval:  {max_dt_ms:.2f} ms")
@@ -146,9 +158,6 @@ def analyze_radar_log(file_path):
     
     # Plot 1: Histogram of Intervals (ms)
     ax1 = axes[0]
-    # Bins of 2ms. 
-    max_val_ms = max(200, max_dt_ms + 50) 
-    bins = np.arange(0, max_val_ms, 2) 
     
     counts, _, _ = ax1.hist(valid_intervals_ms, bins=bins, color='skyblue', edgecolor='black')
     ax1.set_title('Distribution of Time Intervals between Frames')
@@ -156,6 +165,8 @@ def analyze_radar_log(file_path):
     ax1.set_ylabel('Count')
     ax1.grid(True, alpha=0.5)
     ax1.axvline(mean_dt_ms, color='red', linestyle='dashed', linewidth=1, label=f'Mean: {mean_dt_ms:.2f}ms')
+    ax1.axvline(median_dt_ms, color='green', linestyle='dashed', linewidth=1, label=f'Median: {median_dt_ms:.2f}ms')
+    ax1.axvline(mode_dt_ms, color='purple', linestyle='dashed', linewidth=1, label=f'Mode: {mode_dt_ms:.2f}ms')
     ax1.legend()
 
     # Plot 2: Interval vs Frame Index
